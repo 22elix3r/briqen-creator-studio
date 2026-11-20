@@ -1,0 +1,60 @@
+x-studio: &studio
+  build: .
+  environment:
+    STUDIO_DATABASE_URL: postgresql://studio:studio@db:5432/studio
+    STUDIO_PROVIDER_URL: http://provider:8001
+    STUDIO_CALLBACK_URL: http://api:8000/internal/provider-events
+    STUDIO_MEDIA_DIR: /media
+    STUDIO_SIGNING_KEY: ${STUDIO_SIGNING_KEY:-creator-studio-local-demo}
+    STUDIO_LATE_SECONDS: ${STUDIO_LATE_SECONDS:-14}
+    STUDIO_MEDIA_DEADLINE_SECONDS: ${STUDIO_MEDIA_DEADLINE_SECONDS:-60}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: studio
+      POSTGRES_PASSWORD: studio
+      POSTGRES_DB: studio
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "studio"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  migrate:
+    <<: *studio
+    command: python -m studio.db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *studio
+    command: uvicorn studio.api:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:${STUDIO_PORT:-8765}:8000"
+    volumes:
+      - media:/media:ro
+
+  worker:
+    <<: *studio
+    command: python -m studio.worker
+    volumes:
+      - media:/media
+
+  provider:
+    <<: *studio
+    command: uvicorn studio.provider:app --host 0.0.0.0 --port 8001
+    volumes:
+      - fixtures:/media
+
+volumes:
+  db:
+  media:
+  fixtures:
