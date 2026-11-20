@@ -27,7 +27,9 @@ def scene_row(conn, scene_id, *, lock=False):
         SELECT s.* FROM scenes s JOIN projects p ON p.id = s.project_id
         WHERE s.id = %s AND p.workspace_id = %s
     """
-    row = conn.execute(query + (" FOR UPDATE OF s" if lock else ""), (scene_id, WORKSPACE)).fetchone()
+    row = conn.execute(
+        query + (" FOR UPDATE OF s" if lock else ""), (scene_id, WORKSPACE)
+    ).fetchone()
     if row is None:
         raise StudioError(404, "Scene not found")
     return row
@@ -79,8 +81,16 @@ def split_scenes(conn, project, revision_id, specs):
                 (id, project_id, script_revision_id, title, prompt, kind, position, duration_ms)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (uuid4(), project["id"], revision_id, spec.title, spec.prompt, spec.kind,
-             index, spec.duration_ms),
+            (
+                uuid4(),
+                project["id"],
+                revision_id,
+                spec.title,
+                spec.prompt,
+                spec.kind,
+                index,
+                spec.duration_ms,
+            ),
         )
     bump_timeline(conn, project["id"])
 
@@ -118,7 +128,8 @@ def update_timeline(conn, project, edits, expected_version):
         if scene["asset_duration_ms"] is not None:
             validate_clip(
                 {"kind": scene["kind"], "duration_ms": scene["asset_duration_ms"]},
-                edit.trim_ms, edit.duration_ms,
+                edit.trim_ms,
+                edit.duration_ms,
             )
         conn.execute(
             "UPDATE scenes SET position = %s, trim_ms = %s, duration_ms = %s WHERE id = %s",
@@ -131,7 +142,9 @@ def accept_asset(conn, scene, asset_id):
     if scene["accepted_asset_id"] == asset_id:
         return
     if scene["candidate_asset_id"] != asset_id:
-        raise StudioError(409, "This candidate has been replaced. Refresh to see the current result")
+        raise StudioError(
+            409, "This candidate has been replaced. Refresh to see the current result"
+        )
     asset = conn.execute("SELECT * FROM assets WHERE id = %s", (asset_id,)).fetchone()
     validate_clip(asset, scene["trim_ms"], scene["duration_ms"])
     conn.execute("UPDATE scenes SET accepted_asset_id = %s WHERE id = %s", (asset_id, scene["id"]))
@@ -144,7 +157,10 @@ def existing_action(conn, action_key, project_id, kind, scene_id, request):
         (WORKSPACE, action_key),
     ).fetchone()
     if job and (job["project_id"], job["kind"], job["scene_id"], job["request"]) != (
-        project_id, kind, scene_id, request
+        project_id,
+        kind,
+        scene_id,
+        request,
     ):
         raise StudioError(409, "That idempotency key belongs to a different action")
     return job
@@ -160,8 +176,17 @@ def insert_job(conn, project_id, kind, action_key, request, snapshot, *, scene_i
         ON CONFLICT (workspace_id, action_key) DO NOTHING
         RETURNING *
         """,
-        (uuid4(), WORKSPACE, project_id, kind, scene_id, action_key,
-         Jsonb(request), Jsonb(snapshot), deadline),
+        (
+            uuid4(),
+            WORKSPACE,
+            project_id,
+            kind,
+            scene_id,
+            action_key,
+            Jsonb(request),
+            Jsonb(snapshot),
+            deadline,
+        ),
     ).fetchone()
     if row:
         log_event(conn, row["id"], "queued")
@@ -189,10 +214,19 @@ def start_media(conn, scene, action_key, request):
     if request["quoted_credits"] != cost:
         raise StudioError(409, f"Generation costs {cost} credits. Confirm the new quote")
     job, created = insert_job(
-        conn, project_id, "media", action_key, request,
-        {"kind": scene["kind"], "prompt": scene["prompt"], "title": scene["title"],
-         "visual_version": scene["visual_version"], "scenario": request["scenario"],
-         "intent": request["intent"]},
+        conn,
+        project_id,
+        "media",
+        action_key,
+        request,
+        {
+            "kind": scene["kind"],
+            "prompt": scene["prompt"],
+            "title": scene["title"],
+            "visual_version": scene["visual_version"],
+            "scenario": request["scenario"],
+            "intent": request["intent"],
+        },
         scene_id=scene_id,
     )
     if not created:
@@ -225,7 +259,11 @@ def retry_media(conn, scene, job_id):
     ).fetchone()
     if job is None:
         raise StudioError(404, "Job not found for this scene")
-    if job["id"] == scene["latest_job_id"] and job["state"] == "confirming" and job["before_deadline"]:
+    if (
+        job["id"] == scene["latest_job_id"]
+        and job["state"] == "confirming"
+        and job["before_deadline"]
+    ):
         conn.execute(
             """
             UPDATE jobs SET run_after = least(run_after, clock_timestamp()), wake_seq = wake_seq + 1
@@ -276,14 +314,20 @@ def export_snapshot(conn, project):
     for scene in scenes:
         validate_clip(
             {"kind": scene["kind"], "duration_ms": scene["source_duration"]},
-            scene["trim_ms"], scene["duration_ms"],
+            scene["trim_ms"],
+            scene["duration_ms"],
         )
-        manifest.append({
-            key: str(value) if isinstance(value, UUID) else value
-            for key, value in scene.items() if key != "source_duration"
-        })
+        manifest.append(
+            {
+                key: str(value) if isinstance(value, UUID) else value
+                for key, value in scene.items()
+                if key != "source_duration"
+            }
+        )
     return {
         "scenes": manifest,
         "timeline_version": project["timeline_version"],
-        "width": settings.WIDTH, "height": settings.HEIGHT, "fps": settings.FPS,
+        "width": settings.WIDTH,
+        "height": settings.HEIGHT,
+        "fps": settings.FPS,
     }
