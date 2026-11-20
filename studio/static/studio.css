@@ -111,9 +111,11 @@ textarea { resize: vertical; line-height: 1.55; }
 .scene-title { overflow-wrap: anywhere; }
 .scene-preview {
   height: 220px; margin: 8px 0 14px; background: #151510; border: 1px solid var(--line);
-  border-radius: 10px; display: grid; place-items: center; overflow: hidden;
+  border-radius: 10px; display: grid; place-items: center; overflow: hidden; position: relative;
 }
-.scene-preview img, .scene-preview video { height: 100%; width: 100%; object-fit: contain; }
+.scene-preview img, .scene-preview video {
+  position: absolute; inset: 0; height: 100%; width: 100%; object-fit: contain;
+}
 .scene-card select { min-width: 0; }
 .timeline li { align-items: center; }
 .timing { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
