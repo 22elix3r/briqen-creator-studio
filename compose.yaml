@@ -37,6 +37,11 @@ services:
   api:
     <<: *studio
     command: uvicorn studio.api:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
     ports:
       - "127.0.0.1:${STUDIO_PORT:-8765}:8000"
     volumes:

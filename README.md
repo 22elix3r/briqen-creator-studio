@@ -7,7 +7,7 @@
 Start PostgreSQL, the API, a worker, and the deterministic provider with Docker Compose.
 
 ```sh
-docker compose up --build -d
+docker compose up --build -d --wait
 ```
 
 Open [Creator Studio](http://127.0.0.1:8765/) or the [OpenAPI reference](http://127.0.0.1:8765/docs). The demo uses one local workspace with 100 credits and stores media in a private Docker volume. The script and media provider uses local fixtures, so the workflow runs without provider credentials. FFmpeg produces real H.264 MP4 exports.
@@ -25,7 +25,7 @@ Use a disposable Compose project to give the tests a fresh database and wallet.
 
 ```sh
 STUDIO_PORT=8766 STUDIO_LATE_SECONDS=6 STUDIO_MEDIA_DEADLINE_SECONDS=38 \
-  docker compose -p briqen-checks up --build -d
+  docker compose -p briqen-checks up --build -d --wait
 docker compose -p briqen-checks exec -T api python -m unittest discover -s tests -v
 docker compose -p briqen-checks down -v
 ```
