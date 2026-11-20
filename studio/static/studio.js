@@ -277,8 +277,8 @@ function splitForm() {
 
 function preview(asset) {
   if (!asset) return '<span class="note">No media yet</span>';
-  if (asset.kind === "image") return `<img src="${h(asset.url)}" alt="Generated scene preview">`;
-  return `<video src="${h(asset.url)}" controls playsinline muted preload="metadata" aria-label="Generated scene preview"></video>`;
+  if (asset.kind === "image") return `<img src="${h(asset.content_url)}" alt="Generated scene preview">`;
+  return `<video src="${h(asset.content_url)}" controls playsinline muted preload="metadata" aria-label="Generated scene preview"></video>`;
 }
 
 function sceneCard(scene) {
@@ -352,7 +352,7 @@ function exportView() {
       <article class="panel export-item">
         <div class="between"><h2>Draft render</h2>${jobPill(job)}</div>
         ${job.asset ? `${preview(job.asset)}
-          <a class="button primary" href="${h(job.asset.url)}&amp;download=true">Download MP4</a>` : ""}
+          <a class="button primary" href="${h(job.asset.content_url)}?download=true">Download MP4</a>` : ""}
         ${job.error ? `<p class="error">${h(job.error)}</p>` : ""}
         <button data-action="inspect" data-id="${h(job.id)}">Inspect job</button>
       </article>`).join("")}</div>` : ""}

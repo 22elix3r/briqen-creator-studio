@@ -1,0 +1,28 @@
+name: Verify Creator Studio
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration (${{ matrix.storage }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [local, s3]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check source
+        run: |
+          pipx run --spec ruff==0.17.6 ruff check studio tests
+          pipx run --spec ruff==0.17.6 ruff format --check studio tests
+          node --check studio/static/studio.js
+      - name: Verify API, workers and storage
+        run: scripts/verify.sh "${{ matrix.storage }}"

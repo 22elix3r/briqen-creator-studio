@@ -26,6 +26,8 @@ pool = ConnectionPool(
 def migrate():
     settings.validate("migrate")
     with pool.connection() as conn:
+        conn.execute("SET LOCAL statement_timeout = '15min'")
+        conn.execute("SET LOCAL lock_timeout = '10s'")
         conn.execute("SELECT pg_advisory_xact_lock(20261121)")
         conn.execute(
             """

@@ -9,7 +9,7 @@ RUN apt-get update \
     && install -d -o studio -g studio /media /fixtures
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY studio ./studio
 COPY tests ./tests
 USER 10001:10001

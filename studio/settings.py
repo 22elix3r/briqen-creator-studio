@@ -117,9 +117,9 @@ def validate(component):
         raise RuntimeError("A production S3 endpoint must use HTTPS")
     if component == "api" and len(webhook_key()) < 16:
         raise RuntimeError("Set the Replicate webhook signing secret for the API")
-    if component == "worker":
-        if not REPLICATE_TOKEN:
-            raise RuntimeError("Set STUDIO_REPLICATE_TOKEN for the worker")
+    if component == "worker" and not REPLICATE_TOKEN:
+        raise RuntimeError("Set STUDIO_REPLICATE_TOKEN for the worker")
+    if component in {"api", "worker"}:
         for kind in ("script", "image", "video"):
             model, field, _ = model_config(kind)
             if not MODEL_ID.fullmatch(model) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):

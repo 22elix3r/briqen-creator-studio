@@ -163,6 +163,7 @@ def asset_view(asset):
         "kind": asset["kind"],
         "duration_ms": asset["duration_ms"],
         "url": signed_url(asset["id"]),
+        "content_url": f"/api/assets/{asset['id']}/content",
     }
 
 
@@ -574,6 +575,21 @@ def get_media(asset_id: UUID, expires: int, signature: str, download: bool = Fal
         ).fetchone()
     if asset is None:
         raise HTTPException(404, "Media not found")
+    return media_response(asset, download)
+
+
+@app.get("/api/assets/{asset_id}/content")
+def workspace_media(asset_id: UUID, actor: Principal, download: bool = False):
+    with pool.connection() as conn:
+        asset = conn.execute(
+            """
+            SELECT a.kind, a.storage_key FROM assets a JOIN projects p ON p.id = a.project_id
+            WHERE a.id = %s AND p.workspace_id = %s
+            """,
+            (asset_id, actor.workspace_id),
+        ).fetchone()
+    if not asset:
+        raise workflow.StudioError(404, "Media not found")
     return media_response(asset, download)
 
 

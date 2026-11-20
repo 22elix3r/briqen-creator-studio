@@ -2,6 +2,7 @@ import logging
 import signal
 import subprocess
 import tempfile
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, Thread
@@ -305,6 +306,20 @@ def process_claim(fixture, live, job):
             logger.error(
                 "job_processing_error",
                 extra={"job_id": job["id"], "error_type": type(exc).__name__},
+            )
+            finish(job, error="The job could not complete. Try a fresh request.")
+        except (DatabaseError, PoolTimeout):
+            raise
+        except Exception as exc:  # noqa: BLE001 - isolate a single malformed job
+            # A single poisoned job must not stop the queue or strand unrelated reservations.
+            frame = traceback.extract_tb(exc.__traceback__)[-1]
+            logger.error(
+                "job_internal_error",
+                extra={
+                    "job_id": job["id"],
+                    "error_type": type(exc).__name__,
+                    "location": f"{Path(frame.filename).name}:{frame.lineno}",
+                },
             )
             finish(job, error="The job could not complete. Try a fresh request.")
 

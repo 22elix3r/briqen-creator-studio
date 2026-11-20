@@ -17,6 +17,7 @@ class JsonFormatter(logging.Formatter):
             "kind",
             "state",
             "error_type",
+            "location",
         )
         fields = {key: getattr(record, key) for key in attributes if hasattr(record, key)}
         return json.dumps(

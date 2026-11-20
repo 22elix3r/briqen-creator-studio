@@ -6,7 +6,7 @@ x-runtime: &runtime
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   pids_limit: 128
-  env_file: .env.production
+  env_file: ${STUDIO_ENV_FILE:-.env.production}
   environment:
     STUDIO_MODE: production
     STUDIO_MEDIA_BACKEND: s3

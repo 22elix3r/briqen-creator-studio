@@ -13,8 +13,9 @@ from uuid import uuid4
 import httpx
 import psycopg
 from psycopg.rows import dict_row
+from support import db_connection, key, workspace
 
-from studio import settings
+from studio import settings, workflow
 from studio.media import signature
 
 API = os.getenv("STUDIO_TEST_API", "http://127.0.0.1:8000")
@@ -22,8 +23,18 @@ API = os.getenv("STUDIO_TEST_API", "http://127.0.0.1:8000")
 
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.client = httpx.Client(base_url=API, timeout=10)
+        self.workspace_id = workspace() if settings.AUTH_REQUIRED else "demo"
+        headers = (
+            {"Authorization": f"Bearer {key(self.workspace_id)['key']}"}
+            if settings.AUTH_REQUIRED
+            else {}
+        )
+        self.client = httpx.Client(base_url=API, timeout=10, headers=headers, follow_redirects=True)
         self.addCleanup(self.client.close)
+
+    def assert_balanced(self):
+        with db_connection() as conn:
+            self.assertTrue(workflow.audit_credits(conn, self.workspace_id)["consistent"])
 
     def request(self, method, path, *, expected=200, **kwargs):
         response = self.client.request(method, path, **kwargs)
@@ -259,6 +270,8 @@ class WorkflowTests(unittest.TestCase):
             "GET", first["asset"]["url"].split("?")[0] + "?expires=1&signature=x", expected=403
         )
         self.request("GET", first["asset"]["url"], headers={"Range": "bytes=0-15"}, expected=206)
+        self.request("GET", first["asset"]["content_url"], expected=200)
+        self.assert_balanced()
 
     def verify_video(self, job, expected_duration):
         media = self.request("GET", job["asset"]["url"]).content
@@ -333,6 +346,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(scene["accepted"]["id"], accepted)
         self.assertEqual(scene["candidate"]["id"], accepted)
         self.assertEqual(self.project(project_id)["credits"], credits)
+        self.assert_balanced()
 
 
 if __name__ == "__main__":

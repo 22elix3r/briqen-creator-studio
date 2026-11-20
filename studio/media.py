@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import warnings
+from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 
@@ -108,7 +109,7 @@ def fetch_file(storage_key, directory):
         return media_path(storage_key)
     response = s3_client().get_object(Bucket=settings.S3_BUCKET, Key=s3_key(storage_key))
     target = directory / storage_key
-    with response["Body"] as source, target.open("wb") as output:
+    with closing(response["Body"]) as source, target.open("wb") as output:
         if response["ContentLength"] > settings.MAX_MEDIA_BYTES:
             raise ValueError("Stored media exceeds the configured size limit")
         for chunk in source.iter_chunks(chunk_size=256 * 1024):
