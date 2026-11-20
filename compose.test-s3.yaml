@@ -1,35 +1,28 @@
 x-s3: &s3
   STUDIO_MEDIA_BACKEND: s3
   STUDIO_S3_BUCKET: creator-studio-test
-  STUDIO_S3_ENDPOINT: http://object-store:9000
+  STUDIO_S3_ENDPOINT: http://object-store:8333
   AWS_ACCESS_KEY_ID: demo-s3-fixture
   AWS_SECRET_ACCESS_KEY: demo-s3-fixture-secret
   AWS_REGION: us-east-1
 
 services:
   object-store:
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    command: server /data
+    image: chrislusf/seaweedfs@sha256:4b42c212543a0acd4c0e675215ecdcaf62a186ef98def76c7e12701871222d15
     environment:
-      MINIO_ROOT_USER: demo-s3-fixture
-      MINIO_ROOT_PASSWORD: demo-s3-fixture-secret
-    tmpfs: ["/data:rw,size=512m"]
+      AWS_ACCESS_KEY_ID: demo-s3-fixture
+      AWS_SECRET_ACCESS_KEY: demo-s3-fixture-secret
+      S3_BUCKET: creator-studio-test
+    volumes:
+      - test-object-data:/data
 
   s3-init:
-    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    build: .
+    image: ${STUDIO_DEMO_IMAGE:-creator-studio:demo}
+    environment:
+      <<: *s3
     depends_on: [object-store]
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        for n in $$(seq 1 25); do
-          if mc alias set test http://object-store:9000 demo-s3-fixture demo-s3-fixture-secret; then
-            mc mb --ignore-existing test/creator-studio-test
-            exit 0
-          fi
-          sleep 1
-        done
-        exit 1
+    command: python -m tests.wait_for_s3
 
   api:
     environment:
@@ -44,3 +37,6 @@ services:
     depends_on:
       s3-init:
         condition: service_completed_successfully
+
+volumes:
+  test-object-data:

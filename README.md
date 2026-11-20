@@ -28,7 +28,7 @@ scripts/verify.sh local
 scripts/verify.sh s3
 ```
 
-Each command starts two workers and an isolated PostgreSQL database. The S3 profile adds a private MinIO bucket and exercises workspace access keys, browser session revocation, role enforcement, tenant isolation, and conditional uploads. Both profiles check concurrent retries, expired leases, callback deduplication, wallet reconciliation, and the actual contents and durations of rendered MP4s. The provider contract tests cover a lost submission response without a second paid POST.
+Each command starts two workers and an isolated PostgreSQL database. The S3 profile adds a private SeaweedFS bucket and exercises workspace access keys, browser session revocation, role enforcement, tenant isolation, and conditional uploads. Both profiles check concurrent retries, expired leases, callback deduplication, wallet reconciliation, and the actual contents and durations of rendered MP4s. The provider contract tests cover a lost submission response without a second paid POST.
 
 ## Deploy
 
