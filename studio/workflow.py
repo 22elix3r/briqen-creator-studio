@@ -5,7 +5,6 @@ from psycopg.types.json import Jsonb
 from studio import settings
 
 ACTIVE = ("queued", "running", "confirming")
-WORKSPACE = "demo"
 
 
 class StudioError(Exception):
@@ -14,36 +13,71 @@ class StudioError(Exception):
         self.status = status
 
 
-def project_row(conn, project_id, *, lock=False):
+def project_row(conn, project_id, workspace_id, *, lock=False):
     query = "SELECT * FROM projects WHERE id = %s AND workspace_id = %s"
-    row = conn.execute(query + (" FOR UPDATE" if lock else ""), (project_id, WORKSPACE)).fetchone()
+    row = conn.execute(
+        query + (" FOR UPDATE" if lock else ""), (project_id, workspace_id)
+    ).fetchone()
     if row is None:
         raise StudioError(404, "Project not found")
     return row
 
 
-def scene_row(conn, scene_id, *, lock=False):
+def scene_row(conn, scene_id, workspace_id, *, lock=False):
     query = """
         SELECT s.* FROM scenes s JOIN projects p ON p.id = s.project_id
         WHERE s.id = %s AND p.workspace_id = %s
     """
     row = conn.execute(
-        query + (" FOR UPDATE OF s" if lock else ""), (scene_id, WORKSPACE)
+        query + (" FOR UPDATE OF s" if lock else ""), (scene_id, workspace_id)
     ).fetchone()
     if row is None:
         raise StudioError(404, "Scene not found")
     return row
 
 
-def credit_summary(conn):
+def credit_summary(conn, workspace_id):
     return conn.execute(
         """
         SELECT credit_balance AS balance, held_credits AS held,
                credit_balance - held_credits AS available
         FROM workspaces WHERE id = %s
         """,
-        (WORKSPACE,),
+        (workspace_id,),
     ).fetchone()
+
+
+def ledger_entry(conn, workspace_id, event, balance_delta, held_delta, *, job_id=None, note=None):
+    conn.execute(
+        """
+        INSERT INTO credit_ledger (workspace_id, job_id, event, balance_delta, held_delta, note)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (workspace_id, job_id, event, balance_delta, held_delta, note),
+    )
+
+
+def audit_credits(conn, workspace_id):
+    row = conn.execute(
+        """
+        SELECT w.credit_balance AS balance, w.held_credits AS held,
+               (SELECT coalesce(sum(balance_delta), 0) FROM credit_ledger
+                WHERE workspace_id = w.id) AS ledger_balance,
+               (SELECT coalesce(sum(held_delta), 0) FROM credit_ledger
+                WHERE workspace_id = w.id) AS ledger_held,
+               (SELECT coalesce(sum(amount), 0) FROM credit_reservations
+                WHERE workspace_id = w.id AND state = 'held') AS reservation_held
+        FROM workspaces w WHERE w.id = %s
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise StudioError(404, "Workspace not found")
+    return {
+        **row,
+        "consistent": row["balance"] == row["ledger_balance"]
+        and row["held"] == row["ledger_held"] == row["reservation_held"],
+    }
 
 
 def log_event(conn, job_id, event, **detail):
@@ -151,13 +185,13 @@ def accept_asset(conn, scene, asset_id):
     bump_timeline(conn, scene["project_id"])
 
 
-def existing_action(conn, action_key, project_id, kind, scene_id, request):
+def existing_action(conn, project, action_key, kind, scene_id, request):
     job = conn.execute(
         "SELECT * FROM jobs WHERE workspace_id = %s AND action_key = %s",
-        (WORKSPACE, action_key),
+        (project["workspace_id"], action_key),
     ).fetchone()
     if job and (job["project_id"], job["kind"], job["scene_id"], job["request"]) != (
-        project_id,
+        project["id"],
         kind,
         scene_id,
         request,
@@ -166,37 +200,69 @@ def existing_action(conn, action_key, project_id, kind, scene_id, request):
     return job
 
 
-def insert_job(conn, project_id, kind, action_key, request, snapshot, *, scene_id=None):
-    deadline = settings.MEDIA_DEADLINE_SECONDS if kind == "media" else 180
+def insert_job(conn, project, kind, action_key, request, snapshot, *, actor_id=None, scene_id=None):
+    deadline = {
+        "media": settings.MEDIA_DEADLINE_SECONDS,
+        "script": settings.SCRIPT_DEADLINE_SECONDS,
+        "export": settings.EXPORT_DEADLINE_SECONDS,
+    }[kind]
+    workspace_id, job_id = project["workspace_id"], uuid4()
+    provider = settings.PROVIDER if kind != "export" else None
+    if provider == "replicate":
+        model, field, options = settings.model_config(
+            "script" if kind == "script" else snapshot["kind"]
+        )
+        snapshot = {
+            **snapshot,
+            "provider_model": model,
+            "prompt_field": field,
+            "provider_input": options,
+        }
     row = conn.execute(
         """
         INSERT INTO jobs (id, workspace_id, project_id, kind, scene_id, action_key,
-                          request, input, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, clock_timestamp() + %s * interval '1 second')
+                          request, input, provider, provider_run_id, requested_by, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                clock_timestamp() + %s * interval '1 second')
         ON CONFLICT (workspace_id, action_key) DO NOTHING
         RETURNING *
         """,
         (
-            uuid4(),
-            WORKSPACE,
-            project_id,
+            job_id,
+            workspace_id,
+            project["id"],
             kind,
             scene_id,
             action_key,
             Jsonb(request),
             Jsonb(snapshot),
+            provider,
+            str(job_id) if provider == "fixture" else None,
+            actor_id,
             deadline,
         ),
     ).fetchone()
     if row:
+        limit = conn.execute(
+            "SELECT max_active_jobs FROM workspaces WHERE id = %s FOR NO KEY UPDATE",
+            (workspace_id,),
+        ).fetchone()["max_active_jobs"]
+        active = conn.execute(
+            "SELECT count(*) AS total FROM jobs WHERE workspace_id = %s AND state = ANY(%s)",
+            (workspace_id, list(ACTIVE)),
+        ).fetchone()["total"]
+        if active > limit:
+            raise StudioError(429, "This workspace has reached its active job limit")
         log_event(conn, row["id"], "queued")
+        if request.get("quoted_credits"):
+            hold_credits(conn, row, request["quoted_credits"])
         return row, True
-    return existing_action(conn, action_key, project_id, kind, scene_id, request), False
+    return existing_action(conn, project, action_key, kind, scene_id, request), False
 
 
-def start_media(conn, scene, action_key, request):
-    project_id, scene_id = scene["project_id"], scene["id"]
-    previous = existing_action(conn, action_key, project_id, "media", scene_id, request)
+def start_media(conn, project, scene, action_key, request, actor_id=None):
+    scene_id = scene["id"]
+    previous = existing_action(conn, project, action_key, "media", scene_id, request)
     if previous:
         return previous
     if conn.execute(
@@ -208,14 +274,16 @@ def start_media(conn, scene, action_key, request):
         raise StudioError(409, "Generate an initial candidate before requesting a variant")
     if request["intent"] == "generate" and scene["candidate_asset_id"]:
         raise StudioError(409, "Use Regenerate to request another paid variant")
-    if request["scenario"] != "normal" and scene["kind"] != "video":
-        raise StudioError(422, "The timeout scenarios apply to video")
+    if request["scenario"] != "normal" and (
+        settings.PROVIDER != "fixture" or scene["kind"] != "video"
+    ):
+        raise StudioError(422, "Timeout scenarios are available for demo video jobs")
     cost = settings.COSTS[scene["kind"]]
     if request["quoted_credits"] != cost:
         raise StudioError(409, f"Generation costs {cost} credits. Confirm the new quote")
     job, created = insert_job(
         conn,
-        project_id,
+        project,
         "media",
         action_key,
         request,
@@ -227,26 +295,31 @@ def start_media(conn, scene, action_key, request):
             "scenario": request["scenario"],
             "intent": request["intent"],
         },
+        actor_id=actor_id,
         scene_id=scene_id,
     )
     if not created:
         return job
+    conn.execute("UPDATE scenes SET latest_job_id = %s WHERE id = %s", (job["id"], scene_id))
+    return job
+
+
+def hold_credits(conn, job, cost):
     held = conn.execute(
         """
         UPDATE workspaces SET held_credits = held_credits + %s
         WHERE id = %s AND credit_balance - held_credits >= %s RETURNING id
         """,
-        (cost, WORKSPACE, cost),
+        (cost, job["workspace_id"], cost),
     ).fetchone()
     if held is None:
         raise StudioError(409, "Insufficient available credits")
     conn.execute(
         "INSERT INTO credit_reservations (job_id, workspace_id, amount) VALUES (%s, %s, %s)",
-        (job["id"], WORKSPACE, cost),
+        (job["id"], job["workspace_id"], cost),
     )
-    conn.execute("UPDATE scenes SET latest_job_id = %s WHERE id = %s", (job["id"], scene_id))
+    ledger_entry(conn, job["workspace_id"], "hold", 0, cost, job_id=job["id"])
     log_event(conn, job["id"], "credits_held", amount=cost)
-    return job
 
 
 def retry_media(conn, scene, job_id):
@@ -264,18 +337,23 @@ def retry_media(conn, scene, job_id):
         and job["state"] == "confirming"
         and job["before_deadline"]
     ):
-        conn.execute(
+        woke = conn.execute(
             """
-            UPDATE jobs SET run_after = least(run_after, clock_timestamp()), wake_seq = wake_seq + 1
-            WHERE id = %s
+            UPDATE jobs SET run_after = least(run_after, clock_timestamp()),
+                            wake_seq = wake_seq + 1, last_retry_at = clock_timestamp()
+            WHERE id = %s AND (last_retry_at IS NULL OR last_retry_at < clock_timestamp() - interval '2 seconds')
+            RETURNING id
             """,
             (job_id,),
-        )
-        log_event(conn, job_id, "retry_requested")
+        ).fetchone()
+        if woke:
+            log_event(conn, job_id, "retry_requested")
     return job
 
 
 def settle_credits(conn, job, captured):
+    if job["kind"] != "media" and not job["request"].get("quoted_credits"):
+        return
     state = "captured" if captured else "released"
     reservation = conn.execute(
         """
@@ -286,7 +364,7 @@ def settle_credits(conn, job, captured):
         (state, job["id"]),
     ).fetchone()
     if reservation is None:
-        raise RuntimeError("A live media job must have exactly one outstanding credit hold")
+        raise RuntimeError("A paid job must have exactly one outstanding credit hold")
     amount = reservation["amount"]
     conn.execute(
         """
@@ -294,6 +372,14 @@ def settle_credits(conn, job, captured):
         WHERE id = %s
         """,
         (amount, amount if captured else 0, reservation["workspace_id"]),
+    )
+    ledger_entry(
+        conn,
+        job["workspace_id"],
+        "capture" if captured else "release",
+        -amount if captured else 0,
+        -amount,
+        job_id=job["id"],
     )
     log_event(conn, job["id"], "credits_" + state, amount=amount)
 

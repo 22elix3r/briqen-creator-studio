@@ -2,6 +2,8 @@ const workspace = document.querySelector("#workspace");
 const projectList = document.querySelector("#project-list");
 const wallet = document.querySelector("#wallet");
 const notice = document.querySelector("#notice");
+const workspaceLabel = document.querySelector("#workspace-label");
+const signout = document.querySelector("#signout");
 const active = new Set(["queued", "running", "confirming"]);
 const statuses = {
   queued: "Queued", running: "Working", confirming: "Checking generation",
@@ -12,7 +14,8 @@ const requests = new Map();
 const state = {
   projectId: new URL(location.href).searchParams.get("project"),
   projects: [], data: null, tab: "Script", painted: "", script: null,
-  timeline: null, split: null, scenarios: new Map(), audit: null,
+  timeline: null, split: null, scenarios: new Map(), audit: null, session: null,
+  sessionLoaded: false, cursor: null, connectionError: false,
 };
 let noticeTimer;
 
@@ -33,9 +36,9 @@ async function api(path, method = "GET", body, key) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (key) headers["Idempotency-Key"] = key;
-  const response = await fetch(path, { method, headers, body: JSON.stringify(body) });
+  const response = await fetch(path, { method, headers, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   if (response.status === 204) return null;
-  const payload = await response.json();
+  const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = typeof payload.detail === "string"
       ? payload.detail : payload.detail?.map((item) => item.msg).join(". ");
@@ -46,15 +49,58 @@ async function api(path, method = "GET", body, key) {
 
 async function queue(path, body) {
   const action = JSON.stringify([path, body]);
-  if (!requests.has(action)) requests.set(action, crypto.randomUUID());
+  const fingerprint = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(action));
+  const hash = Array.from(new Uint8Array(fingerprint), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const storageKey = `studio.pending.${hash}`;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(storageKey)); } catch { saved = null; }
+  const key = requests.get(hash) || (saved && Date.now() - saved.at < 24 * 3600000 ? saved.key : null)
+    || crypto.randomUUID();
+  requests.set(hash, key);
+  try { sessionStorage.setItem(storageKey, JSON.stringify({ key, at: Date.now() })); } catch { /* use memory */ }
+  function clear() {
+    requests.delete(hash);
+    try { sessionStorage.removeItem(storageKey); } catch { /* use memory */ }
+  }
   try {
-    const result = await api(path, "POST", body, requests.get(action));
-    requests.delete(action);
+    const result = await api(path, "POST", body, key);
+    clear();
     return result;
   } catch (error) {
-    if (error.status >= 400 && error.status < 500) requests.delete(action);
+    if (error.status >= 400 && error.status < 500 && error.status !== 401) clear();
     throw error;
   }
+}
+
+function canEdit() {
+  return state.session?.role === "editor";
+}
+
+async function loadSession() {
+  try {
+    state.session = await api("/api/session");
+  } catch (error) {
+    if (error.status !== 401) throw error;
+    state.session = null;
+    state.data = null;
+    state.projects = [];
+    state.cursor = null;
+    state.script = null;
+    state.timeline = null;
+    state.audit = null;
+    state.split = null;
+    state.scenarios.clear();
+    wallet.textContent = "";
+  }
+  state.sessionLoaded = true;
+  workspaceLabel.textContent = state.session
+    ? `${state.session.workspace}${state.session.demo_provider ? " · Simulated provider" : ""}${canEdit() ? "" : " · View only"}`
+    : "";
+  signout.hidden = !state.session?.auth_required;
+  document.querySelector(".api-link").hidden = !state.session?.api_docs;
+  document.querySelector('[data-action="new"]').hidden = !canEdit();
+  paintList();
+  paint();
 }
 
 function message(text, error = false) {
@@ -68,9 +114,11 @@ function showCredits(credits) {
   wallet.textContent = `${credits.available} credits available${credits.held ? ` · ${credits.held} held` : ""}`;
 }
 
-async function loadList() {
-  const response = await api("/api/projects");
-  state.projects = response.projects;
+async function loadList(append = false) {
+  const path = append && state.cursor ? `/api/projects?before=${encodeURIComponent(state.cursor)}` : "/api/projects";
+  const response = await api(path);
+  state.projects = append ? [...state.projects, ...response.projects] : response.projects;
+  state.cursor = response.next_cursor;
   showCredits(response.credits);
   paintList();
 }
@@ -79,7 +127,7 @@ function paintList() {
   projectList.innerHTML = state.projects.map((project) => `
     <button class="project-link" data-action="select" data-id="${h(project.id)}"
       aria-current="${project.id === state.projectId ? "page" : "false"}">${h(project.title)}</button>
-  `).join("");
+  `).join("") + (state.cursor ? '<button data-action="more">Load more projects</button>' : "");
 }
 
 function selectProject(projectId, updateLocation = true) {
@@ -125,7 +173,7 @@ function prepareDrafts() {
 
 async function refresh({ background = false } = {}) {
   const projectId = state.projectId;
-  if (!projectId) return;
+  if (!projectId || !state.session) return;
   const result = await api(`/api/projects/${projectId}`);
   if (state.projectId !== projectId) return;
   state.data = result;
@@ -150,14 +198,26 @@ function heading() {
     </nav>`;
 }
 
+function signinView() {
+  return `<div class="intro"><h1>Sign in to Studio</h1>
+    <p>Enter the access key issued for your workspace.</p></div>
+    <form id="signin-form" class="panel new-project signin">
+      <label>Workspace access key<input name="access_key" type="password" required maxlength="128"
+        autocomplete="current-password" spellcheck="false"></label>
+      <button class="primary" type="submit">Sign in</button>
+    </form>`;
+}
+
 function newProject() {
+  if (!canEdit()) return '<div class="empty"><p>Select a project from the workspace.</p></div>';
+  const demo = state.session.demo_provider;
   return `
     <div class="intro"><h1>Start a project</h1>
-      <p>Turn a creative brief into a two-scene reel. Try the cold brew brief to see how a late video result is recovered.</p>
+      <p>${demo ? "Use the cold brew brief to see how a late video result is recovered." : "Enter a campaign brief to start your script and storyboard."}</p>
     </div>
     <form id="project-form" class="panel new-project">
-      <label>Project name<input name="title" required maxlength="120" value="Northline Cold Brew"></label>
-      <label>Creative brief<textarea name="brief" required rows="4" maxlength="6000">A short product reel for a cold brew concentrate. Lead with motion in the first two seconds and finish with a clean packshot and a clear call to action.</textarea></label>
+      <label>Project name<input name="title" required maxlength="120" value="${demo ? "Northline Cold Brew" : ""}"></label>
+      <label>Creative brief<textarea name="brief" required rows="4" maxlength="6000">${demo ? "A short product reel for a cold brew concentrate. Lead with motion in the first two seconds and finish with a clean packshot and a clear call to action." : ""}</textarea></label>
       <button class="primary" type="submit">Create project</button>
     </form>`;
 }
@@ -172,6 +232,7 @@ function scriptView() {
   const scriptJob = jobs.find(({ kind }) => kind === "script");
   const jobBusy = scriptJob && active.has(scriptJob.state);
   const current = revision();
+  const scriptCost = state.data.costs.script;
   return `
     <div class="grid script-grid">
       <section class="panel">
@@ -179,7 +240,7 @@ function scriptView() {
         <label for="script-draft">Draft</label>
         <textarea id="script-draft" class="script-text" maxlength="6000" placeholder="Write from your brief or request an assisted draft.">${h(draft.content)}</textarea>
         <div class="actions">
-          <button data-action="assist" ${jobBusy ? "disabled" : ""}>${current ? "Suggest revision" : "Draft with AI"}</button>
+          <button data-action="assist" ${jobBusy ? "disabled" : ""}>${current ? "Suggest revision" : "Draft with AI"}${scriptCost ? ` · ${scriptCost} ${scriptCost === 1 ? "credit" : "credits"}` : ""}</button>
           <button class="primary" data-action="save-script">Save revision</button>
           ${current && !scenes.length ? '<button data-action="split">Split into scenes</button>' : ""}
           ${scenes.length ? '<button data-action="tab" data-value="Storyboard">Open storyboard</button>' : ""}
@@ -231,7 +292,9 @@ function sceneCard(scene) {
     <p>${h(prompt)}</p>
     <div class="scene-preview">${preview(candidate || accepted)}</div>
     <p class="note">${newCandidate ? "Candidate for review" : accepted ? '<span class="accepted">Accepted in cut</span>' : "Awaiting media"}${newCandidate && accepted ? " · Current cut keeps the previous asset" : ""}</p>
-    ${kind === "video" ? `<label>Provider scenario
+    ${newCandidate && kind === "video" && candidate.duration_ms < scene.duration_ms + scene.trim_ms
+      ? `<p class="note">This clip is ${candidate.duration_ms / 1000}s. Shorten the timing before accepting it.</p>` : ""}
+    ${kind === "video" && state.session.demo_provider ? `<label>Provider scenario
       <select data-scenario="${h(id)}" ${inProgress ? "disabled" : ""}>
         <option value="normal" ${scenario === "normal" ? "selected" : ""}>Normal</option>
         <option value="late" ${scenario === "late" ? "selected" : ""}>Late result after timeout</option>
@@ -313,7 +376,15 @@ function auditView() {
 }
 
 function paint() {
-  workspace.setAttribute("aria-busy", String(Boolean(state.projectId && !state.data)));
+  workspace.setAttribute("aria-busy", String(!state.sessionLoaded || Boolean(state.session && state.projectId && !state.data)));
+  if (!state.sessionLoaded) {
+    workspace.innerHTML = '<div class="empty"><p>Connecting to Studio…</p></div>';
+    return;
+  }
+  if (!state.session) {
+    workspace.innerHTML = signinView();
+    return;
+  }
   if (!state.projectId) {
     workspace.innerHTML = newProject();
     return;
@@ -324,6 +395,12 @@ function paint() {
   }
   const view = { Script: scriptView, Storyboard: storyboardView, Export: exportView }[state.tab];
   workspace.innerHTML = heading() + `<div role="tabpanel" aria-label="${state.tab}">${view()}</div>` + auditView();
+  if (!canEdit()) {
+    const allowed = new Set(["tab", "inspect", "close-audit", "load-revision"]);
+    for (const element of workspace.querySelectorAll("input, textarea, select, button")) {
+      if (!allowed.has(element.dataset.action)) element.disabled = true;
+    }
+  }
 }
 
 function openSplit() {
@@ -358,12 +435,20 @@ async function performAction(button) {
   const { action, id, value } = button.dataset;
   const projectPath = `/api/projects/${state.projectId}`;
   switch (action) {
+    case "signout": {
+      await api("/api/session", "DELETE");
+      requests.clear();
+      return loadSession();
+    }
+    case "more": return loadList(true);
     case "new": return selectProject(null);
     case "select": return selectProject(id);
     case "tab": return setTab(value);
     case "assist": {
       if (state.script.dirty) throw new Error("Save your edits before requesting an assisted revision");
-      await queue(`${projectPath}/script-assist`, { parent_id: revision()?.id ?? null });
+      await queue(`${projectPath}/script-assist`, {
+        parent_id: revision()?.id ?? null, quoted_credits: state.data.costs.script,
+      });
       break;
     }
     case "save-script": {
@@ -387,7 +472,7 @@ async function performAction(button) {
       if (scene.candidate && !window.confirm(`Generate another variant for ${cost} credits?`)) return;
       await queue(`/api/scenes/${id}/generations`, {
         intent: scene.candidate ? "regenerate" : "generate", quoted_credits: cost,
-        scenario: scene.kind === "video"
+        scenario: scene.kind === "video" && state.session.demo_provider
           ? state.scenarios.get(id) || (scene.candidate ? "normal" : "late") : "normal",
       });
       state.scenarios.delete(id);
@@ -434,6 +519,7 @@ async function act(button, operation) {
   try {
     await operation();
   } catch (error) {
+    if (error.status === 401 && state.session) await loadSession();
     message(error.message, true);
   } finally {
     if (button) button.disabled = false;
@@ -480,7 +566,12 @@ workspace.addEventListener("submit", (event) => {
   const fields = new FormData(form);
   act(event.submitter, async () => {
     const projectPath = `/api/projects/${state.projectId}`;
-    if (form.id === "project-form") {
+    if (form.id === "signin-form") {
+      await api("/api/session", "POST", Object.fromEntries(fields));
+      await loadSession();
+      await loadList();
+      await refresh();
+    } else if (form.id === "project-form") {
       const project = await api("/api/projects", "POST", Object.fromEntries(fields));
       await selectProject(project.id);
       await loadList();
@@ -510,8 +601,9 @@ window.addEventListener("popstate", () => {
 async function boot() {
   paint();
   try {
-    await loadList();
-    if (state.projectId && !state.projects.some(({ id }) => id === state.projectId)) {
+    await loadSession();
+    if (state.session) await loadList();
+    if (state.session && state.projectId && !state.projects.some(({ id }) => id === state.projectId)) {
       const id = state.projectId;
       try { await refresh(); } catch (error) {
         if (error.status !== 404 && error.status !== 422) throw error;
@@ -526,14 +618,22 @@ async function boot() {
   }
   async function poll() {
     try {
-      if (!document.hidden) await refresh({ background: true });
+      if (!document.hidden && state.session && state.projectId) {
+        await refresh({ background: true });
+        state.connectionError = false;
+      }
     } catch (error) {
-      if (state.data) console.warn("Studio status polling:", error.message);
+      if (error.status === 401) await loadSession();
+      else if (!state.connectionError) {
+        state.connectionError = true;
+        message("Studio is reconnecting. Your last saved project is still visible.", true);
+      }
     } finally {
-      setTimeout(poll, 950);
+      const running = state.data?.jobs.some((job) => active.has(job.state));
+      setTimeout(poll, running ? 1400 : 7000);
     }
   }
-  setTimeout(poll, 950);
+  setTimeout(poll, 850);
 }
 
 boot();

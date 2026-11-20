@@ -1,16 +1,22 @@
 x-studio: &studio
   build: .
+  image: ${STUDIO_DEMO_IMAGE:-creator-studio:demo}
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=512m"]
   environment:
+    STUDIO_MODE: demo
     STUDIO_DATABASE_URL: postgresql://studio:studio@db:5432/studio
     STUDIO_PROVIDER_URL: http://provider:8001
     STUDIO_CALLBACK_URL: http://api:8000/internal/provider-events
     STUDIO_MEDIA_DIR: /media
     STUDIO_SIGNING_KEY: ${STUDIO_SIGNING_KEY:-creator-studio-local-demo}
+    STUDIO_PUBLIC_ORIGIN: http://127.0.0.1:${STUDIO_PORT:-8765}
+    STUDIO_AUTH_REQUIRED: ${STUDIO_AUTH_REQUIRED:-0}
     STUDIO_LATE_SECONDS: ${STUDIO_LATE_SECONDS:-14}
     STUDIO_MEDIA_DEADLINE_SECONDS: ${STUDIO_MEDIA_DEADLINE_SECONDS:-60}
-  depends_on:
-    migrate:
-      condition: service_completed_successfully
 
 services:
   db:
@@ -34,9 +40,21 @@ services:
       db:
         condition: service_healthy
 
+  media-init:
+    <<: *studio
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /media /fixtures"]
+    cap_add: [CHOWN, DAC_OVERRIDE]
+    volumes:
+      - media:/media
+      - fixtures:/fixtures
+
   api:
     <<: *studio
-    command: uvicorn studio.api:app --host 0.0.0.0 --port 8000
+    command: uvicorn studio.api:app --host 0.0.0.0 --port 8000 --no-access-log
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
       interval: 2s
@@ -50,12 +68,23 @@ services:
   worker:
     <<: *studio
     command: python -m studio.worker
+    stop_grace_period: 45s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      media-init:
+        condition: service_completed_successfully
     volumes:
       - media:/media
 
   provider:
     <<: *studio
-    command: uvicorn studio.provider:app --host 0.0.0.0 --port 8001
+    command: uvicorn studio.provider:app --host 0.0.0.0 --port 8001 --no-access-log
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      media-init:
+        condition: service_completed_successfully
     volumes:
       - fixtures:/media
 

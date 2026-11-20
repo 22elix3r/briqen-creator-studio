@@ -1,0 +1,45 @@
+x-runtime: &runtime
+  image: ${STUDIO_IMAGE:-creator-studio:1.0.0}
+  init: true
+  read_only: true
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 128
+  env_file: .env.production
+  environment:
+    STUDIO_MODE: production
+    STUDIO_MEDIA_BACKEND: s3
+    STUDIO_PROVIDER: replicate
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=768m"]
+  logging:
+    options:
+      max-size: "20m"
+      max-file: "4"
+
+services:
+  migrate:
+    <<: *runtime
+    restart: "no"
+    command: python -m studio.db
+    profiles: [operations]
+
+  api:
+    <<: *runtime
+    command: uvicorn studio.api:app --host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers --limit-concurrency 100
+    ports:
+      - "127.0.0.1:${STUDIO_PORT:-8765}:8000"
+    stop_grace_period: 30s
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+
+  worker:
+    <<: *runtime
+    command: python -m studio.worker
+    stop_grace_period: 60s
+    mem_limit: 1536m
+    cpus: 2.0

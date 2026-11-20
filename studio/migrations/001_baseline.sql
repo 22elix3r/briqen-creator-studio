@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS workspaces (
     credit_balance integer NOT NULL CHECK (credit_balance >= 0),
     held_credits integer NOT NULL DEFAULT 0 CHECK (held_credits BETWEEN 0 AND credit_balance)
 );
-INSERT INTO workspaces (id, credit_balance) VALUES ('demo', 100) ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS projects (
     id uuid PRIMARY KEY,

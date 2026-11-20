@@ -12,8 +12,9 @@
   <header class="topbar">
     <a class="brand" href="/" aria-label="Creator Studio home"><span class="brand-mark">C</span> Creator Studio</a>
     <div class="top-actions">
-      <span class="environment"><i></i> Simulated AI provider</span>
+      <span class="environment" id="workspace-label"></span>
       <span id="wallet" class="wallet" aria-label="Available credits"></span>
+      <button id="signout" data-action="signout" hidden>Sign out</button>
     </div>
   </header>
   <div class="shell">
@@ -23,7 +24,7 @@
         <button class="icon" data-action="new" aria-label="New project">+</button>
       </div>
       <nav id="project-list" aria-label="Projects"></nav>
-      <a class="api-link" href="/docs" target="_blank" rel="noreferrer">API reference ↗</a>
+      <a class="api-link" href="/docs" target="_blank" rel="noreferrer" hidden>API reference ↗</a>
     </aside>
     <main id="workspace" aria-busy="true"></main>
   </div>

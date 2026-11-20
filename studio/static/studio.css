@@ -15,6 +15,7 @@
   color: var(--ink);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; }
 a { color: inherit; }
 button, input, textarea, select { font: inherit; }
@@ -93,6 +94,9 @@ textarea { resize: vertical; line-height: 1.55; }
 .tab[aria-selected="true"] { color: var(--cream); border-bottom: 2px solid var(--cream); }
 .panel { padding: clamp(14px, 2.3vw, 23px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .new-project { max-width: 640px; margin-top: 30px; }
+.signin { max-width: 460px; }
+.signin input { font-family: system-ui, sans-serif; }
+.sidebar-empty { margin: 6px 0; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .script-grid { grid-template-columns: minmax(0, 2fr) minmax(215px, 1fr); }
 .stack { display: grid; gap: 16px; }
