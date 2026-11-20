@@ -10,14 +10,13 @@ Use one application API, PostgreSQL, private object storage, and workers for AI 
 
 ```mermaid
 flowchart LR
-    C[Studio client] <-->|Edit project and poll jobs| API[Studio API]
-    API <-->|Project edits, jobs and credits| DB[(PostgreSQL)]
-    W[Generation and render workers] <-->|Claim and complete jobs| DB
-    W <-->|Submit jobs and check status| P[Script, image and video providers]
+    C[Studio client] <-->|Edit and poll| API[Studio API]
+    API <-->|State and callbacks| DB[(PostgreSQL)]
+    W[Generation and render workers] <-->|Claim and complete| DB
+    W <-->|Submit and reconcile| P[AI generation providers]
     P -->|Signed completion| API
-    API -->|Persist completion reference| DB
-    W <-->|Stage AI assets and render MP4| S[(Private media storage)]
-    C -->|Preview and download via signed URLs| S
+    W <-->|Read and write media| S[(Private media storage)]
+    C -->|Signed URLs| S
 ```
 
 | Record | What it preserves |
@@ -33,7 +32,7 @@ An authorized `POST /scenes/{id}/generations` returns **`202 Accepted`** with `j
 
 ## Trace a two-scene cold brew reel
 
-1. A marketer brings a creative insight about motion in the opening seconds. They use AI to draft a cold brew reel and revise the call to action. The API saves immutable script revisions `r1` and `r2`. The split of `r2` creates `S1`, a product still, and `S2`, a pour video. The operator only needs a one-line brief in the exercise.
+1. A marketer brings a creative insight about motion in the opening seconds. A script worker uses that brief to draft a cold brew reel and saves it as revision `r1`. The marketer edits the call to action and the API saves `r2`. Splitting `r2` creates `S1`, a product still, and `S2`, a pour video.
 2. The marketer requests one image and one video. The generation worker sends each provider the job’s saved input snapshot and stable request key. `S1` completes and the worker stages image `A1` in private storage. The marketer accepts `A1`. `S2` exceeds its waiting threshold and the editor shows **Checking video generation** with a **Retry status** action. The timeline stays editable.
 3. Retry returns the existing `S2` job and expedites reconciliation. The original callback arrives late. While its job is current and within its recovery window, the worker verifies the run, saves clip `V1`, and atomically marks the job successful, captures its held credits, and publishes `V1` as a candidate. `A1` stays accepted. The marketer previews and accepts `V1`.
 4. The marketer deliberately requests another pour variant. **Regenerate** displays its new credit quote and, after confirmation, creates a new job and hold. Its result appears as candidate `V2` while `V1` stays accepted. The marketer keeps `V1`. If they later choose `V2`, acceptance compares the selected candidate ID with the current candidate before changing the cut.
@@ -41,11 +40,11 @@ An authorized `POST /scenes/{id}/generations` returns **`202 Accepted`** with `j
 
 ## Retry, regeneration, and one credit charge
 
-Create the job and atomically hold its quoted credits against the workspace balance. `UNIQUE(workspace_id, client_action_key)` on `Job` collapses double-clicks and client request replay. Return the existing job for the same key and payload. Reject a key reused with different inputs. `CreditReservation.job_id` is the primary key. In the completion transaction, a conditional `held → captured` update and the balance change take effect together with result publication. Terminal failure or expiry releases the hold in a transaction. This proposal charges for a generated candidate the marketer receives, regardless of their later acceptance decision.
+Create the job and atomically hold its quoted credits against the workspace balance. `UNIQUE(workspace_id, client_action_key)` on `Job` collapses repeats of the same paid action. The client retains the key until it knows the job ID. Return the existing job for the same key and payload. Reject a key reused with different inputs. `CreditReservation.job_id` is the primary key. In the completion transaction, a conditional `held → captured` update and the balance change take effect together with result publication. A hold reduces available credits immediately. Capture converts the same hold to a posted charge. Terminal failure or expiry releases the hold in a transaction. This proposal charges for a generated candidate the marketer receives, regardless of their later acceptance decision.
 
 A timeout moves the job to `confirming`. Retry on that job wakes a status check with the same provider request key. If lookup cannot find the submission, replay is allowed only within the provider’s idempotency window and with the identical key and payload. Retry clicks share the existing hold. A definitive failure or expiry ends that action with the hold released. A new paid generation then requires explicit confirmation. Regenerate deliberately starts a distinct action with a distinct key. Keep one active media job per scene in v1. While it runs, the marketer can revise script drafts and adjust timeline order and timing. Applying a change to that scene’s visual inputs can wait for its current job to resolve.
 
-Authenticated provider callbacks durably record completion references and wake the worker. A scheduled provider status check can recover missed callbacks. The worker verifies run identity and stages the file under an immutable key before publishing it. A result is eligible only when the job owns the scene’s current generation slot, the visual inputs still match, and the recovery window is open. Duplicate notifications, superseded jobs, and expired results cannot change the timeline or capture credits. Unreferenced staged objects can expire after a grace period. Operations on the same project acquire locks in a consistent order, starting with the project for scene and timeline writes.
+Authenticated provider callbacks acknowledge delivery after durably recording the completion reference and making the job due for processing. A scheduled provider status check can recover missed callbacks. The worker verifies run identity and stages the file under an immutable key before publishing it. A result is eligible only when the job owns the scene’s current generation slot, the visual inputs still match, and the recovery window is open. Duplicate notifications, superseded jobs, and expired results cannot change the timeline or capture credits. Unreferenced staged objects can expire after a grace period. Operations on the same project acquire locks in a consistent order, starting with the project for scene and timeline writes. An unchanged accepted asset stays available for export while its replacement is in progress.
 
 ```text
 retry(scene_id, job_id):
@@ -71,3 +70,28 @@ on_media_ready(event):
 `is_current` compares the latest job ID and visual input version. `insert_asset_once` uses a unique producing job ID for a single-result media job. The retry and callback paths never write the accepted asset pointer. The expiry transition uses the same locks as completion, and the completion handler checks the deadline after acquiring those locks.
 
 **Design-changing assumption.** The media provider supports lookup by a client-chosen correlation key and deduplicates repeated submits with that key through the recovery window. That contract protects provider spend. PostgreSQL separately protects customer credits. If the provider cannot offer durable idempotency or lookup, use a known run ID or await its correlated callback, expose the uncertainty, and disable automatic resubmission for ambiguous outcomes. A local ledger cannot establish whether an unconfirmed provider request ran or was billed.
+
+## First release and launch checks
+
+**Build first.** Prove script revision → two scenes → accepted media → a single vertical MP4 using deterministic provider fixtures. Implement one generation and approval flow for both image and short video, lease recovery, quoted credits, and export from an immutable manifest. Swap in one provider integration per modality and keep the same tests at the adapter boundary. Use per-scene job status and keep the current cut editable while generation runs.
+
+**Defer.** Live collaboration, a multi-track editor, provider failover, and automated ingestion of creator research. Those features can follow once reviewers can reconcile credits and explain exactly which assets appear in an export.
+
+Run two checks before shipping.
+
+1. **Generation recovery and credit integrity.** Use a fake provider to accept a request just before the worker loses its connection. Kill and restart the worker, double-click Retry, and deliver the original success through both callback and status polling. Assert one provider run, one result, one captured charge for the video action, and the original accepted image. Replay the old callback after a new paid regeneration and confirm it cannot replace the new candidate or charge again. Withhold success through expiry in another run and assert the hold is released and an expired callback is ignored.
+2. **Export integrity during edits.** Accept `A1` and `V1`, move the video first, set six and four seconds, and start export. While rendering, change the timeline and approve a different video. Assert the first MP4 uses the original snapshot, has the expected manifest asset IDs and order, and plays for ten seconds within a frame. Verify a new export uses the updated choices.
+
+For a pilot, log job and provider run IDs with state transitions, lease recovery, and credit outcomes. Track time from script to downloadable cut and the share of video timeouts recovered. Investigate a provider run with no matching job or an open hold past expiry before broadening the rollout.
+
+## Finish the take-home in 45 minutes
+
+| Time | Work to complete |
+| --- | --- |
+| 0–7 min | Write the two-scene story, settle the result-selection rule, and sketch the six components. |
+| 7–19 min | Draft page 1 with the diagram, records, `202` response, and the end-to-end project. |
+| 19–33 min | Draft page 2 with the timeout sequence, retry and regeneration rules, credit constraints, and 10–20 lines of pseudocode. |
+| 33–39 min | Add the first-release scope, two checks, and one provider assumption. Walk through the late callback arriving before Retry, after Retry, twice, and after expiry. |
+| 39–45 min | Verify the rendered two-page design, label the winning result and charge, confirm any prior-work claim, and attach the AI disclosure. |
+
+**Submission.** Page 1 should show how one marketer gets a cut. Page 2 should make the late-result choice and charge traceable from the pseudocode. Include the optional project sample only with a specific contribution you can explain. If you rely on this plan, append the task-related prompt and relevant response excerpts, or a share link, with a short statement of what you changed and personally verified. Redact sensitive details and omit unrelated chat. The appendix sits outside the two-page cap.
