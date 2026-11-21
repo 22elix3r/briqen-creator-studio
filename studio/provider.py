@@ -13,7 +13,7 @@ from uuid import UUID
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -167,6 +167,18 @@ def draw_frame(path, inputs):
     width, height = settings.WIDTH, settings.HEIGHT
     variant = inputs["intent"] == "regenerate"
     video = inputs["kind"] == "video"
+    demo_scene = "pour video" if video else "product still"
+    if (
+        inputs.get("project_title", "").casefold() == "northline cold brew"
+        and inputs["title"].casefold() == demo_scene
+    ):
+        name = "pour" if video else "still"
+        with Image.open(Path(__file__).with_name("demo_media") / f"northline-{name}.jpg") as photo:
+            frame = ImageOps.fit(
+                photo, (width, height), Image.Resampling.LANCZOS, bleed=0.07 if variant else 0
+            )
+            frame.save(path)
+        return
     top = (51, 58, 53) if variant else (56, 67, 56) if video else (93, 52, 33)
     bottom = (14, 25, 23) if video else (39, 22, 17)
     image = Image.new("RGB", (width, height))

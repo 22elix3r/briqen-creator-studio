@@ -320,6 +320,8 @@ def get_project(project_id: UUID, actor: Principal):
                 SELECT id FROM jobs WHERE project_id = %s ORDER BY created_at DESC, id DESC LIMIT 50
             )
             SELECT j.id, j.kind, j.state, j.scene_id, j.error, j.result, j.created_at,
+                   CASE WHEN j.kind = 'export'
+                        THEN (j.input->>'timeline_version')::integer END AS timeline_version,
                    c.amount AS credit_amount, c.state AS credit_state
             FROM jobs j LEFT JOIN credit_reservations c ON c.job_id = j.id
             WHERE j.project_id = %s AND (
@@ -349,6 +351,7 @@ def get_project(project_id: UUID, actor: Principal):
             job["id"]: {
                 **job_view(job),
                 "created_at": job["created_at"],
+                "timeline_version": job["timeline_version"],
                 "credit_amount": job["credit_amount"],
                 "credit_state": job["credit_state"],
                 "asset": media.get(UUID(job["result"]["asset_id"]))

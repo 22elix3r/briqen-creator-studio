@@ -3,30 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <title>Creator Studio</title>
   <link rel="stylesheet" href="/static/studio.css">
   <script type="module" src="/static/studio.js"></script>
 </head>
 <body>
+  <a class="skip-link" href="#workspace">Skip to workspace</a>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Creator Studio home"><span class="brand-mark">C</span> Creator Studio</a>
+    <a class="brand" href="/" aria-label="Creator Studio home">
+      <span class="brand-mark" aria-hidden="true"><span></span></span>
+      Creator Studio
+    </a>
     <div class="top-actions">
       <span class="environment" id="workspace-label"></span>
-      <span id="wallet" class="wallet" aria-label="Available credits"></span>
-      <button id="signout" data-action="signout" hidden>Sign out</button>
+      <span id="wallet" class="wallet" aria-label="Available credits" hidden></span>
+      <button class="quiet" id="signout" data-action="signout" hidden>Sign out</button>
     </div>
   </header>
   <div class="shell">
     <aside class="sidebar">
       <div class="sidebar-heading">
-        <span>Projects</span>
-        <button class="icon" data-action="new" aria-label="New project">+</button>
+        <h2>Projects</h2>
+        <button class="icon" data-action="new" aria-label="New project" hidden>+</button>
       </div>
       <nav id="project-list" aria-label="Projects"></nav>
-      <a class="api-link" href="/docs" target="_blank" rel="noreferrer" hidden>API reference ↗</a>
+      <a class="api-link" href="/docs" target="_blank" rel="noreferrer" hidden>API reference <span aria-hidden="true">↗</span></a>
     </aside>
-    <main id="workspace" aria-busy="true"></main>
+    <main id="workspace" tabindex="-1" aria-busy="true"></main>
   </div>
   <div id="notice" role="status" aria-live="polite"></div>
 </body>

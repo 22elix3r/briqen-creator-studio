@@ -291,6 +291,7 @@ def start_media(conn, project, scene, action_key, request, actor_id=None):
             "kind": scene["kind"],
             "prompt": scene["prompt"],
             "title": scene["title"],
+            **({"project_title": project["title"]} if settings.PROVIDER == "fixture" else {}),
             "visual_version": scene["visual_version"],
             "scenario": request["scenario"],
             "intent": request["intent"],
