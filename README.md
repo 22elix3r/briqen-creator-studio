@@ -14,7 +14,7 @@ docker compose up --build -d --wait
 
 Open [Creator Studio](http://127.0.0.1:8765/) or the [interactive API reference](http://127.0.0.1:8765/docs). The local workspace starts with 100 credits. The fixture provider returns reproducible scripts and media, including cold brew campaign imagery for the prefilled project. FFmpeg renders real, silent, vertical H.264 MP4s.
 
-1. Create the prefilled cold brew project. Draft, edit, and save a revision. Split it into a product still and a pour video.
+1. Create the prefilled cold brew project. Click **Draft with AI** and wait for the draft to appear before editing. Save a revision and split it into a product still and a pour video. If a newer revision arrives while you edit, click **Rebase draft** to keep your text, then click **Save revision**.
 2. Generate and accept the still. Select **Late result after timeout** for the video and click **Retry status** when it appears. The video arrives roughly 14 seconds after submission. **Inspect job** shows the original provider run and its credit hold or charge.
 3. Accept the video. Request a separate **Regenerate** if you want to review another variant. Use **Candidate** and **Approved** above the preview to compare them. The cut keeps the approved clip until you replace it.
 4. Under **Cut order and timing**, move the video first and save a six-second segment followed by a four-second still. Open **Export**, render the cut, and download the MP4. After a cut changes, prior renders remain available under **Earlier cut**. Each export has its own immutable manifest.

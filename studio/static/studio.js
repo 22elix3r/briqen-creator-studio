@@ -19,6 +19,8 @@ const state = {
   exportId: null, mediaMode: "candidate", briefOpen: false, prompts: new Map(),
 };
 let noticeTimer;
+let refreshRequest = 0;
+let appliedRefresh = 0;
 let historyPosition = history.state?.studioPosition ?? 0;
 history.replaceState({ studioPosition: historyPosition }, "", location.href);
 
@@ -195,9 +197,9 @@ function revision() {
   return state.data.revisions.find(({ id }) => id === state.data.project.current_revision_id);
 }
 
-function prepareDrafts() {
+function prepareDrafts({ keepScript }) {
   const current = revision();
-  if (!state.script?.dirty && state.script?.base !== (current?.id ?? null)) {
+  if (!keepScript && !state.script?.dirty && state.script?.base !== (current?.id ?? null)) {
     state.script = { base: current?.id ?? null, content: current?.content ?? "", dirty: false };
   }
   if (!state.script) state.script = { base: null, content: "", dirty: false };
@@ -215,17 +217,22 @@ function prepareDrafts() {
 async function refresh({ background = false } = {}) {
   const projectId = state.projectId;
   if (!projectId || !state.session) return;
+  const request = ++refreshRequest;
   const result = await api(`/api/projects/${projectId}`);
-  if (state.projectId !== projectId) return;
+  if (state.projectId !== projectId || !state.session || request <= appliedRefresh) return;
+  appliedRefresh = request;
   state.data = result;
-  prepareDrafts();
-  showCredits(result.credits);
-  const freshStamp = JSON.stringify(result, (key, value) => key === "url" ? undefined : value);
   const focus = document.activeElement;
   const isEditing = workspace.contains(focus) && focus?.matches("input, textarea, select");
+  // Keep the buffer and its base together while the focused editor stays on screen.
+  prepareDrafts({ keepScript: background && isEditing && focus.id === "script-draft" });
+  showCredits(result.credits);
+  const freshStamp = JSON.stringify(result, (key, value) => key === "url" ? undefined : value);
   if (!background || (freshStamp !== state.painted && !isEditing)) {
     state.painted = freshStamp;
     paint();
+  } else {
+    updateScriptControls();
   }
 }
 
@@ -273,10 +280,26 @@ function jobPill(job) {
   return job ? `<span class="state ${h(job.state)}">${h(statuses[job.state])}</span>` : "";
 }
 
-function scriptAction() {
-  if (state.script.dirty) return "save-script";
-  if (!revision()) return "assist";
-  return state.data.scenes.length ? "tab" : "split";
+function scriptNeedsRebase() {
+  const draft = state.script;
+  return draft.dirty && (draft.conflict || draft.base !== state.data.project.current_revision_id);
+}
+
+function updateScriptControls() {
+  const status = workspace.querySelector("#script-save-state");
+  if (!status) return;
+  const draft = state.script;
+  const conflict = scriptNeedsRebase();
+  const label = conflict ? "Revision conflict" : draft.dirty ? "Unsaved changes" : draft.base ? "Saved" : "";
+  if (status.textContent !== label) status.textContent = label;
+  workspace.querySelector("#script-conflict").hidden = !conflict;
+  workspace.querySelector('[data-action="save-script"]').disabled = !canEdit() || conflict || draft.pending;
+  workspace.querySelector('[data-action="rebase-script"]').disabled = !canEdit() || draft.pending;
+  const mainAction = draft.dirty ? (conflict ? "rebase-script" : "save-script")
+    : !draft.base ? "assist" : state.data.scenes.length ? "tab" : "split";
+  for (const button of workspace.querySelectorAll("[data-script-action]")) {
+    button.classList.toggle("primary", button.dataset.action === mainAction);
+  }
 }
 
 function scriptView() {
@@ -285,23 +308,26 @@ function scriptView() {
   const job = jobs.find(({ kind }) => kind === "script");
   const current = revision();
   const cost = state.data.costs.script;
-  const mainAction = scriptAction();
-  const appearance = (action) => mainAction === action ? 'class="primary"' : "";
   return `
     <div class="script-layout">
       <section class="editor-panel">
         <div class="section-heading"><h2>Script draft</h2>${jobPill(job)}</div>
         <label class="visually-hidden" for="script-draft">Draft</label>
         <textarea id="script-draft" class="script-text" maxlength="6000"
-          placeholder="Write from your brief or request an assisted draft.">${h(draft.content)}</textarea>
+          placeholder="Write from your brief or request an assisted draft.">
+${h(draft.content)}</textarea>
         <div class="editor-tools">
           <div class="actions">
-            <button ${appearance("assist")} data-script-action data-action="assist" ${active.has(job?.state) ? "disabled" : ""}>${current ? "Suggest revision" : "Draft with AI"}${cost ? ` · ${cost} ${cost === 1 ? "credit" : "credits"}` : ""}</button>
-            <button ${appearance("save-script")} data-script-action data-action="save-script">Save revision</button>
-            ${current && !scenes.length ? `<button ${appearance("split")} data-script-action data-action="split">Split into scenes <span aria-hidden="true">→</span></button>` : ""}
-            ${scenes.length ? `<button ${appearance("tab")} data-script-action data-action="tab" data-value="Storyboard">Open storyboard <span aria-hidden="true">→</span></button>` : ""}
+            <button data-script-action data-action="assist" ${active.has(job?.state) ? "disabled" : ""}>${current ? "Suggest revision" : "Draft with AI"}${cost ? ` · ${cost} ${cost === 1 ? "credit" : "credits"}` : ""}</button>
+            <button data-script-action data-action="save-script">Save revision</button>
+            ${current && !scenes.length ? `<button data-script-action data-action="split">Split into scenes <span aria-hidden="true">→</span></button>` : ""}
+            ${scenes.length ? `<button data-script-action data-action="tab" data-value="Storyboard">Open storyboard <span aria-hidden="true">→</span></button>` : ""}
           </div>
-          <span class="note" id="script-save-state">${draft.dirty ? "Unsaved changes" : current ? "Saved" : ""}</span>
+          <span class="note" id="script-save-state" role="status"></span>
+        </div>
+        <div class="actions error-message" id="script-conflict" hidden>
+          <p>A newer revision is available. Rebase to keep your text and save it as a new revision.</p>
+          <button data-script-action data-action="rebase-script">Rebase draft</button>
         </div>
         ${job?.error ? `<p class="error-message">${h(job.error)}</p>` : ""}
       </section>
@@ -580,6 +606,7 @@ function paint() {
   const wasPlaying = currentVideo && !currentVideo.paused;
   const view = { Script: scriptView, Storyboard: storyboardView, Export: exportView }[state.tab];
   workspace.innerHTML = heading() + `<div id="studio-stage" role="tabpanel" aria-labelledby="tab-${state.tab.toLowerCase()}">${view()}</div>` + auditView();
+  updateScriptControls();
   const nextVideo = workspace.querySelector("video[data-asset]");
   if (currentVideo && nextVideo?.dataset.asset === currentVideo.dataset.asset) {
     nextVideo.replaceWith(currentVideo);
@@ -626,6 +653,34 @@ function findScene(id) {
   return state.data.scenes.find((scene) => scene.id === id);
 }
 
+async function saveScript(projectPath, draft) {
+  const { base, content } = draft;
+  let saved;
+  try {
+    saved = await api(`${projectPath}/revisions`, "POST", { parent_id: base, content });
+  } catch (error) {
+    if (error.status !== 409) throw error;
+    if (state.script === draft) {
+      draft.conflict = true;
+      draft.dirty = true;
+    }
+    return;
+  }
+  if (state.script !== draft) return;
+  // A poll that started before the save may still return the previous revision.
+  appliedRefresh = refreshRequest;
+  if (state.data.project.current_revision_id === base) {
+    state.data.project.current_revision_id = saved.id;
+    state.data.revisions.unshift(saved);
+  }
+  draft.base = saved.id;
+  draft.dirty = draft.content !== content;
+  if (!draft.dirty) draft.content = saved.content;
+  updateUnloadWarning();
+  await refresh({ background: draft.dirty });
+  message("Revision saved");
+}
+
 async function performAction(button) {
   const { action, id, value } = button.dataset;
   const projectPath = `/api/projects/${state.projectId}`;
@@ -669,19 +724,32 @@ async function performAction(button) {
       await queue(`${projectPath}/script-assist`, {
         parent_id: revision()?.id ?? null, quoted_credits: state.data.costs.script,
       });
-      break;
+      return refresh({ background: true });
     }
-    case "save-script": {
+    case "save-script":
+    case "rebase-script": {
       const draft = state.script;
-      const { base, content } = draft;
-      const saved = await api(`${projectPath}/revisions`, "POST", { parent_id: base, content });
-      if (state.script !== draft) return;
-      draft.base = saved.id;
-      draft.dirty = draft.content !== content;
-      if (!draft.dirty) draft.content = saved.content;
-      updateUnloadWarning();
-      message("Revision saved");
-      break;
+      const rebase = action === "rebase-script";
+      if (draft.pending || rebase !== scriptNeedsRebase()) return;
+      draft.pending = true;
+      updateScriptControls();
+      try {
+        if (!rebase) return await saveScript(projectPath, draft);
+        await refresh({ background: true });
+        if (state.script !== draft) return;
+        draft.base = state.data.project.current_revision_id;
+        draft.conflict = false;
+      } finally {
+        draft.pending = false;
+        if (state.script === draft) {
+          updateUnloadWarning();
+          updateScriptControls();
+        }
+      }
+      if (document.activeElement === document.body) {
+        workspace.querySelector('[data-action="save-script"]')?.focus({ preventScroll: true });
+      }
+      return;
     }
     case "load-revision": {
       const item = state.data.revisions.find(({ id: revisionId }) => revisionId === id);
@@ -757,7 +825,9 @@ async function act(button, operation) {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
-  if (button) act(button, () => performAction(button));
+  if (!button) return;
+  const scriptWrite = ["save-script", "rebase-script"].includes(button.dataset.action);
+  act(scriptWrite ? null : button, () => performAction(button));
 });
 
 workspace.addEventListener("keydown", (event) => {
@@ -775,10 +845,7 @@ workspace.addEventListener("input", ({ target }) => {
     state.script.content = target.value;
     state.script.dirty = true;
     updateUnloadWarning();
-    document.querySelector("#script-save-state").textContent = "Unsaved changes";
-    for (const button of workspace.querySelectorAll("[data-script-action]")) {
-      button.classList.toggle("primary", button.dataset.action === "save-script");
-    }
+    updateScriptControls();
   }
   if (target.dataset.timing && target.validity.valid) {
     const edit = state.timeline.scenes.find((item) => item.scene_id === target.dataset.timing);
