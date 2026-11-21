@@ -42,8 +42,14 @@ I used OpenAI Codex for product research, architecture planning, implementation,
 
 **Applied.** I selected the warm editorial design. Codex implemented it and changed the approval label to **Accept candidate** after a browser walkthrough. I reported the draft-loss path in `selectProject()`. Codex reproduced it and added a discard confirmation, navigation protection, and safeguards for pending saves.
 
-### 7. Verify the workflow and prepare the handoff
+### 7. Recover edits after a script revision conflict
+
+> One remaining edge case I found: typing and saivng while the AI draft is still runinning can leave your text stuck behind repeated 409 revision conflicts. The text isn't overwritten, but sving requires loading the newer revision or reloading. A recovery/rebase action would fix it: for the demo, wait for the AI draft before editing.
+
+**Applied.** Codex added **Rebase draft** to keep the typed text and update its base to the current revision. The editor then lets the user save the text as a new revision, with the AI draft still available in revision history. The demo guide says to wait for the AI draft before editing.
+
+### 8. Verify the workflow and prepare the handoff
 
 > Build a verification plan around observable outcomes. Use two workers and a deterministic provider to replay a lost acknowledgement, simultaneous retries, lease recovery, a duplicate callback, and expiry. Assert that the wallet and ledger agree, the accepted assets are preserved, and exports retain the inputs they captured. Inspect downloaded files for encoding, duration, and scene order. Run the end-to-end browser flow alongside local and S3-compatible CI. Finish by checking that the two-page submission explains the release boundary and that the appendix identifies which work was AI-assisted, which decisions I made, and what the tests actually exercised.
 
-**Applied.** Codex ran the local and private S3-compatible integration profiles, inspected downloaded MP4s with FFprobe, and walked through the editor in the browser. Both CI jobs passed. Chrome and Firefox both exercised the draft-loss regression. [GitHub Actions run](https://github.com/22elix3r/briqen-creator-studio/actions/runs/44899487977)
+**Applied.** Codex ran the local and private S3-compatible integration profiles, inspected downloaded MP4s with FFprobe, and walked through the editor in the browser. Chrome and Firefox both exercised the draft-loss regression. Chromium verified revision recovery both when polling detected the newer revision and when the save returned `409`. Both CI jobs passed on the revision recovery commit. [GitHub Actions run for `026af17`](https://github.com/22elix3r/briqen-creator-studio/actions/runs/44903830580)
