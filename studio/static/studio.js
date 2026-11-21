@@ -19,6 +19,35 @@ const state = {
   exportId: null, mediaMode: "candidate", briefOpen: false, prompts: new Map(),
 };
 let noticeTimer;
+let historyPosition = history.state?.studioPosition ?? 0;
+history.replaceState({ studioPosition: historyPosition }, "", location.href);
+
+function hasUnsavedEdits() {
+  return Boolean(state.script?.dirty || state.timeline?.dirty);
+}
+
+function confirmDiscardEdits() {
+  return !hasUnsavedEdits() || window.confirm("Discard unsaved changes and leave this project?");
+}
+
+function warnBeforeUnload(event) {
+  event.preventDefault();
+  event.returnValue = true;
+}
+
+function updateUnloadWarning() {
+  if (hasUnsavedEdits()) window.addEventListener("beforeunload", warnBeforeUnload);
+  else window.removeEventListener("beforeunload", warnBeforeUnload);
+}
+
+function projectUrl(projectId, tab) {
+  const url = new URL(location.href);
+  if (projectId) url.searchParams.set("project", projectId);
+  else url.searchParams.delete("project");
+  if (tab === "Script") url.searchParams.delete("view");
+  else url.searchParams.set("view", tab.toLowerCase());
+  return url;
+}
 
 function viewFromLocation() {
   const view = new URL(location.href).searchParams.get("view");
@@ -154,11 +183,8 @@ function selectProject(projectId, updateLocation = true) {
   state.prompts.clear();
   state.painted = "";
   if (updateLocation) {
-    const url = new URL(location.href);
-    if (projectId) url.searchParams.set("project", projectId);
-    else url.searchParams.delete("project");
-    url.searchParams.delete("view");
-    history.pushState({}, "", url);
+    historyPosition += 1;
+    history.pushState({ studioPosition: historyPosition }, "", projectUrl(projectId, state.tab));
   }
   paintList();
   paint();
@@ -532,6 +558,7 @@ function auditView() {
 }
 
 function paint() {
+  updateUnloadWarning();
   workspace.setAttribute("aria-busy", String(!state.sessionLoaded || Boolean(state.session && state.projectId && !state.data)));
   if (!state.sessionLoaded) {
     workspace.innerHTML = '<div class="empty"><p>Connecting to Studio…</p></div>';
@@ -592,10 +619,7 @@ function setTab(tab) {
 function changeView(tab) {
   state.tab = tab;
   state.audit = null;
-  const url = new URL(location.href);
-  if (tab === "Script") url.searchParams.delete("view");
-  else url.searchParams.set("view", tab.toLowerCase());
-  history.replaceState({}, "", url);
+  history.replaceState(history.state, "", projectUrl(state.projectId, tab));
 }
 
 function findScene(id) {
@@ -607,13 +631,18 @@ async function performAction(button) {
   const projectPath = `/api/projects/${state.projectId}`;
   switch (action) {
     case "signout": {
+      if (!confirmDiscardEdits()) return;
       await api("/api/session", "DELETE");
       requests.clear();
       return loadSession();
     }
     case "more": return loadList(true);
-    case "new": return selectProject(null);
-    case "select": return selectProject(id);
+    case "new":
+    case "select": {
+      const target = id ?? null;
+      if (target !== state.projectId && confirmDiscardEdits()) return selectProject(target);
+      return;
+    }
     case "tab": return setTab(value);
     case "scene": {
       if (state.sceneId === id) return;
@@ -643,10 +672,14 @@ async function performAction(button) {
       break;
     }
     case "save-script": {
-      await api(`${projectPath}/revisions`, "POST", {
-        parent_id: state.script.base, content: state.script.content,
-      });
-      state.script = null;
+      const draft = state.script;
+      const { base, content } = draft;
+      const saved = await api(`${projectPath}/revisions`, "POST", { parent_id: base, content });
+      if (state.script !== draft) return;
+      draft.base = saved.id;
+      draft.dirty = draft.content !== content;
+      if (!draft.dirty) draft.content = saved.content;
+      updateUnloadWarning();
       message("Revision saved");
       break;
     }
@@ -741,6 +774,7 @@ workspace.addEventListener("input", ({ target }) => {
   if (target.id === "script-draft") {
     state.script.content = target.value;
     state.script.dirty = true;
+    updateUnloadWarning();
     document.querySelector("#script-save-state").textContent = "Unsaved changes";
     for (const button of workspace.querySelectorAll("[data-script-action]")) {
       button.classList.toggle("primary", button.dataset.action === "save-script");
@@ -750,6 +784,7 @@ workspace.addEventListener("input", ({ target }) => {
     const edit = state.timeline.scenes.find((item) => item.scene_id === target.dataset.timing);
     edit[target.name] = Math.round(Number(target.value) * 1000);
     state.timeline.dirty = true;
+    updateUnloadWarning();
     document.querySelector("#cut-save-state").textContent = "Unsaved edits";
     document.querySelector("#cut-save").disabled = false;
     document.querySelector("#cut-reset").hidden = false;
@@ -802,19 +837,40 @@ workspace.addEventListener("submit", (event) => {
       changeView("Storyboard");
       await refresh();
     } else if (form.id === "timeline-form") {
-      await api(`${projectPath}/timeline`, "PUT", {
-        version: state.timeline.version, scenes: state.timeline.scenes,
-      });
-      state.timeline = null;
+      const timeline = state.timeline;
+      const { version } = timeline;
+      const scenes = structuredClone(timeline.scenes);
+      await api(`${projectPath}/timeline`, "PUT", { version, scenes });
+      if (state.timeline !== timeline) return;
+      timeline.version = version + 1;
+      timeline.dirty = JSON.stringify(timeline.scenes) !== JSON.stringify(scenes);
+      updateUnloadWarning();
       await refresh();
       message("Timeline saved");
     }
   });
 });
 
-window.addEventListener("popstate", () => {
-  selectProject(new URL(location.href).searchParams.get("project"), false)
-    .catch((error) => message(error.message, true));
+window.addEventListener("popstate", (event) => {
+  const projectId = new URL(location.href).searchParams.get("project");
+  const position = event.state?.studioPosition;
+  if (projectId !== state.projectId && !confirmDiscardEdits()) {
+    // Back and Forward have already changed the active entry when popstate runs.
+    if (Number.isInteger(position) && position !== historyPosition) {
+      history.go(historyPosition - position);
+    } else {
+      history.pushState({ studioPosition: historyPosition }, "", projectUrl(state.projectId, state.tab));
+    }
+    return;
+  }
+  if (Number.isInteger(position)) historyPosition = position;
+  if (projectId !== state.projectId) {
+    selectProject(projectId, false).catch((error) => message(error.message, true));
+  } else if (state.tab !== viewFromLocation()) {
+    state.tab = viewFromLocation();
+    state.audit = null;
+    paint();
+  }
 });
 
 async function boot() {
