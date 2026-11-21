@@ -232,10 +232,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(recovered["credit"], {"amount": 12, "state": "captured"})
         self.assertIn("provider_callback", [event["event"] for event in recovered["events"]])
         self.assertEqual(
-            self.sql("SELECT count(*) AS count FROM provider_runs WHERE id = %s", (late,))[0][
-                "count"
-            ],
-            1,
+            self.sql(
+                "SELECT input->>'project_title' AS title FROM provider_runs WHERE id = %s", (late,)
+            ),
+            [{"title": "Northline workflow check"}],
         )
         self.assertEqual(self.project(project_id)["scenes"][0]["accepted"]["id"], still)
         self.accept(video, original)
@@ -261,6 +261,14 @@ class WorkflowTests(unittest.TestCase):
         second_export = self.export(project_id)
         first = self.wait_state(first_export, "succeeded")
         second = self.wait_state(second_export, "succeeded")
+        project = self.project(project_id)
+        exports = {job["id"]: job for job in project["jobs"] if job["kind"] == "export"}
+        self.assertLess(
+            exports[first_export]["timeline_version"], project["project"]["timeline_version"]
+        )
+        self.assertEqual(
+            exports[second_export]["timeline_version"], project["project"]["timeline_version"]
+        )
         self.assertEqual([s["asset_id"] for s in first["manifest"]["scenes"]], [original, still])
         self.assertEqual([s["asset_id"] for s in second["manifest"]["scenes"]], [still, variant])
         first_frame = self.verify_video(first, expected_duration=10)

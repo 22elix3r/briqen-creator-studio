@@ -29,6 +29,7 @@ class GenerationInput(BaseModel):
     kind: Literal["image", "video"]
     prompt: str
     title: str
+    project_title: str | None = None
     visual_version: int
     scenario: Literal["normal", "late", "expire"]
     intent: Literal["generate", "regenerate"]
@@ -123,7 +124,7 @@ def run_view(run):
 
 @app.put("/runs/{run_id}")
 def submit_run(run_id: UUID, body: GenerationInput):
-    payload = body.model_dump(mode="json")
+    payload = body.model_dump(mode="json", exclude_none=True)
     delay = {
         "normal": 0.65,
         "late": settings.LATE_SECONDS,
